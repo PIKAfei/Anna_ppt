@@ -10,19 +10,19 @@
   </head>
   <body>
     <div id="app">
-      <!-- Left: composer -->
+      <!-- Left: brief + outline (outline-first, enterprise standard) -->
       <aside class="composer">
         <header class="brand">
           <span class="logo">▦</span>
           <div>
             <h1>Anna Deck</h1>
-            <p>AI 做 PPT</p>
+            <p>人人可用的 AI 演示文稿</p>
           </div>
         </header>
 
         <label class="field">
-          <span>主题 / 大纲</span>
-          <textarea id="topic" rows="4" placeholder="例如：用 8 页讲清楚「碳中和背景下的新能源汽车投资机会」"></textarea>
+          <span>主题 / 粘贴材料 / 大纲</span>
+          <textarea id="topic" rows="3" placeholder="例如：用 8 页讲清楚「碳中和与新能源汽车」，或粘贴一段课程笔记"></textarea>
         </label>
 
         <div class="row">
@@ -31,7 +31,7 @@
             <select id="lang">
               <option value="zh">中文</option>
               <option value="en">English</option>
-              <option value="auto">跟随主题</option>
+              <option value="auto">跟随输入</option>
             </select>
           </label>
           <label class="field">
@@ -44,40 +44,56 @@
         </div>
 
         <label class="field">
-          <span>风格模板</span>
-          <select id="style">
-            <option value="business">商务蓝</option>
-            <option value="minimal">极简黑白</option>
-            <option value="academic">学术</option>
-            <option value="tech">科技紫</option>
-            <option value="vibrant">活力橙</option>
+          <span>语气 / 受众</span>
+          <select id="tone">
+            <option value="general">通用（清晰易懂）</option>
+            <option value="student">学生 / 课程作业</option>
+            <option value="exec">经营汇报 / 管理层</option>
+            <option value="proposal">客户提案 / 销售</option>
+            <option value="review">项目复盘 / 周报</option>
+            <option value="pitch">融资路演 / 投资人</option>
           </select>
         </label>
 
-        <label class="field">
-          <span>语气 / 受众</span>
-          <select id="tone">
-            <option value="general">通用</option>
-            <option value="investor">投资人 / 融资路演</option>
-            <option value="exec">管理层 / 汇报</option>
-            <option value="student">学生 / 课程作业</option>
-            <option value="sales">客户 / 销售</option>
-          </select>
-        </label>
+        <div class="row">
+          <label class="field">
+            <span>模板</span>
+            <select id="style">
+              <option value="business">商务蓝</option>
+              <option value="minimal">极简黑白</option>
+              <option value="academic">咨询白皮书</option>
+              <option value="tech">科技紫</option>
+              <option value="vibrant">活力橙</option>
+            </select>
+          </label>
+          <label class="field brand-color">
+            <span>品牌色</span>
+            <input type="color" id="brandColor" value="#1F4E79" />
+          </label>
+        </div>
 
         <label class="check">
           <input type="checkbox" id="withImages" />
-          <span>AI 配图（默认关闭，每张图消耗较多额度）</span>
+          <span>AI 配图（默认关闭，每张消耗较多额度）</span>
         </label>
 
         <div class="actions">
-          <button id="genBtn" class="primary">✨ AI 生成</button>
-          <button id="sampleBtn" class="ghost">载入示例</button>
+          <button id="genBtn" class="primary">✨ 生成大纲</button>
+          <button id="sampleBtn" class="ghost">示例</button>
         </div>
         <p class="hint" id="costHint"></p>
+
+        <section class="outline">
+          <div class="outline-head">
+            <span>大纲 · <b id="outlineCount">0</b> 页</span>
+            <button id="addSlideBtn" class="mini" title="新增一页" disabled>＋</button>
+          </div>
+          <ul id="outlineList" class="outline-list"></ul>
+          <p class="outline-tip">先审大纲、再生成 —— 可改标题、增删、调整顺序</p>
+        </section>
       </aside>
 
-      <!-- Right: preview + editor -->
+      <!-- Right: canvas + per-slide editor -->
       <main class="stage">
         <div class="stage-top">
           <div class="nav">
@@ -87,6 +103,7 @@
           </div>
           <div class="stage-tools">
             <button id="exportBtn" class="primary" disabled>⬇ 导出 PPTX</button>
+            <button id="pdfBtn" class="ghost" disabled>⬇ PDF</button>
             <button id="regenBtn" class="ghost" disabled>↻ 重新生成</button>
           </div>
         </div>
@@ -96,18 +113,21 @@
         </div>
 
         <div class="editor">
-          <label class="field">
-            <span>本页标题</span>
-            <input id="edTitle" type="text" placeholder="幻灯片标题" disabled />
-          </label>
+          <div class="editor-row">
+            <label class="field grow">
+              <span>本页标题</span>
+              <input id="edTitle" type="text" placeholder="幻灯片标题" disabled />
+            </label>
+            <button id="delSlideBtn" class="mini danger" title="删除本页" disabled>删除本页</button>
+          </div>
           <div class="row">
             <label class="field grow">
               <span>本页要点（每行一条）</span>
-              <textarea id="edBullets" rows="4" placeholder="要点一&#10;要点二" disabled></textarea>
+              <textarea id="edBullets" rows="3" placeholder="要点一&#10;要点二" disabled></textarea>
             </label>
             <label class="field grow">
               <span>演讲备注</span>
-              <textarea id="edNotes" rows="4" placeholder="演讲时可以展开的内容…" disabled></textarea>
+              <textarea id="edNotes" rows="3" placeholder="演讲时可以展开的内容…" disabled></textarea>
             </label>
           </div>
         </div>
@@ -115,6 +135,9 @@
         <div id="toast" class="toast hidden"></div>
       </main>
     </div>
+
+    <!-- print-only deck, used for PDF export -->
+    <div id="printDeck" class="print-deck"></div>
 
     <script type="module" src="./app.js"></script>
   </body>
