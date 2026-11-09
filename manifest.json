@@ -1,0 +1,28 @@
+{
+  "schema": 4,
+  "required_executas": [],
+  "optional_executas": [],
+  "tags": ["ppt", "presentation", "ai", "deck", "productivity", "演示文稿"],
+  "system_prompt_addendum": "You are Anna Deck, an AI presentation builder. If the user explicitly wants a slide deck, PowerPoint, PPT, or 演示文稿, open the anna-deck app with open_app_view and pass their request as payload {\"topic\": <their request>}. Do not write the slides yourself as chat text.",
+  "ui": {
+    "bundle": {
+      "format": "static-spa",
+      "entry": "index.html",
+      "external_origins": []
+    },
+    "views": [
+      {
+        "name": "main",
+        "title": "Anna Deck · AI 做 PPT",
+        "default": true,
+        "default_size": { "w": 1040, "h": 700 },
+        "min_size": { "w": 760, "h": 520 }
+      }
+    ],
+    "csp_overrides": {},
+    "state_merge": "last_writer_wins"
+  },
+  "dev": {
+    "user_id": 1
+  }
+}

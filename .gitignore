@@ -1,0 +1,4 @@
+node_modules/
+.anna/
+*.log
+.DS_Store

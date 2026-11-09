@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Anna Deck · AI 做 PPT</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <!-- PptxGenJS (UMD, sets window.PptxGenJS) — vendored locally, same-origin -->
+    <script src="./assets/pptxgen.bundle.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Left: composer -->
+      <aside class="composer">
+        <header class="brand">
+          <span class="logo">▦</span>
+          <div>
+            <h1>Anna Deck</h1>
+            <p>AI 做 PPT</p>
+          </div>
+        </header>
+
+        <label class="field">
+          <span>主题 / 大纲</span>
+          <textarea id="topic" rows="4" placeholder="例如：用 8 页讲清楚「碳中和背景下的新能源汽车投资机会」"></textarea>
+        </label>
+
+        <div class="row">
+          <label class="field">
+            <span>语言</span>
+            <select id="lang">
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+              <option value="auto">跟随主题</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>页数</span>
+            <select id="count">
+              <option>5</option><option selected>8</option><option>10</option>
+              <option>12</option><option>15</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>风格模板</span>
+          <select id="style">
+            <option value="business">商务蓝</option>
+            <option value="minimal">极简黑白</option>
+            <option value="academic">学术</option>
+            <option value="tech">科技紫</option>
+            <option value="vibrant">活力橙</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>语气 / 受众</span>
+          <select id="tone">
+            <option value="general">通用</option>
+            <option value="investor">投资人 / 融资路演</option>
+            <option value="exec">管理层 / 汇报</option>
+            <option value="student">学生 / 课程作业</option>
+            <option value="sales">客户 / 销售</option>
+          </select>
+        </label>
+
+        <label class="check">
+          <input type="checkbox" id="withImages" />
+          <span>AI 配图（默认关闭，每张图消耗较多额度）</span>
+        </label>
+
+        <div class="actions">
+          <button id="genBtn" class="primary">✨ AI 生成</button>
+          <button id="sampleBtn" class="ghost">载入示例</button>
+        </div>
+        <p class="hint" id="costHint"></p>
+      </aside>
+
+      <!-- Right: preview + editor -->
+      <main class="stage">
+        <div class="stage-top">
+          <div class="nav">
+            <button id="prevBtn" title="上一页">‹</button>
+            <span id="pageInfo">— / —</span>
+            <button id="nextBtn" title="下一页">›</button>
+          </div>
+          <div class="stage-tools">
+            <button id="exportBtn" class="primary" disabled>⬇ 导出 PPTX</button>
+            <button id="regenBtn" class="ghost" disabled>↻ 重新生成</button>
+          </div>
+        </div>
+
+        <div class="preview-wrap">
+          <div id="preview" class="slide-preview"></div>
+        </div>
+
+        <div class="editor">
+          <label class="field">
+            <span>本页标题</span>
+            <input id="edTitle" type="text" placeholder="幻灯片标题" disabled />
+          </label>
+          <div class="row">
+            <label class="field grow">
+              <span>本页要点（每行一条）</span>
+              <textarea id="edBullets" rows="4" placeholder="要点一&#10;要点二" disabled></textarea>
+            </label>
+            <label class="field grow">
+              <span>演讲备注</span>
+              <textarea id="edNotes" rows="4" placeholder="演讲时可以展开的内容…" disabled></textarea>
+            </label>
+          </div>
+        </div>
+
+        <div id="toast" class="toast hidden"></div>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
