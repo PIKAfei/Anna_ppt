@@ -170,29 +170,33 @@ button.mini.danger { color: #b42318; }
 .editor-row { display: flex; gap: 10px; align-items: flex-end; }
 .editor-row .field { flex: 1; }
 
-/* ---------- print-only deck (PDF export, CJK-safe) ---------- */
-.print-deck { display: none; }
+/* ---------- host-mediated delivery link ---------- */
+.cloud-link {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 12px; font-size: 12px; color: var(--muted);
+  background: var(--panel-2); border-bottom: 1px solid var(--border);
+}
+.cloud-link.hidden { display: none; }
+.cl-label { font-weight: 600; color: var(--accent-2); white-space: nowrap; }
+.cl-link {
+  color: var(--text); font-weight: 600; max-width: 220px;
+  text-decoration: underline; text-underline-offset: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cl-copy {
+  padding: 2px 8px; font-size: 11px; white-space: nowrap; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+}
+.cl-copy:hover { border-color: var(--accent-2); }
+.cl-url {
+  flex: 1; min-width: 100px; max-width: 300px; opacity: .65;
+  font-family: ui-monospace, monospace; font-size: 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 @media (max-width: 820px) {
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .composer { border-right: none; border-bottom: 1px solid var(--border); max-height: 42vh; }
-}
-
-@media print {
-  @page { size: landscape; margin: 0; }
-  html, body { margin: 0; padding: 0; background: #fff; }
-  #app, .toast { display: none !important; }
-  .print-deck { display: block; }
-  .print-slide {
-    width: 100%; height: 100vh; box-sizing: border-box;
-    padding: 6% 7%; display: flex; flex-direction: column;
-    page-break-after: always; break-after: page; position: relative;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact;
-  }
-  .print-slide:last-child { page-break-after: auto; break-after: auto; }
-  .ps-kicker { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; }
-  .ps-title { font-size: 34px; font-weight: 800; line-height: 1.15; margin: 10px 0 0; }
-  .ps-sub { font-size: 17px; opacity: .8; margin-top: 8px; }
-  .ps-bullets { margin: 22px 0 0; padding-left: 24px; font-size: 18px; line-height: 1.8; }
-  .ps-image { position: absolute; right: 7%; top: 24%; width: 32%; height: 54%; object-fit: cover; border-radius: 8px; }
+  .cl-url { display: none; }
 }

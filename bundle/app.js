@@ -12,11 +12,13 @@
 //   component UI + typed Slide schema -> static SPA + structured Slide JSON
 //   managed AI gateway (no BYO key, central billing) -> Anna Host llm.complete
 //   OOXML export                      -> PptxGenJS (vendored)
-//   managed auth/storage              -> Anna host storage + sandbox
+//   PDF export                        -> jsPDF + Canvas (browser-rendered CJK)
+//   managed auth/storage/file delivery -> Anna host storage / upload.inline
 //   design system                     -> built-in templates + brand color
 import { AnnaAppRuntime } from "/static/anna-apps/_sdk/latest/index.js";
 
 const PptxGenJS = window.PptxGenJS;
+const jsPDF = window.jspdf && window.jspdf.jsPDF;
 
 const STYLES = {
   business: { label: "商务蓝", bg: "FFFFFF", accent: "1F4E79", text: "1C1E21", sub: "5B6B7B", dark: false },
@@ -48,7 +50,7 @@ const genBtn = $("genBtn"), sampleBtn = $("sampleBtn"), exportBtn = $("exportBtn
   pdfBtn = $("pdfBtn"), regenBtn = $("regenBtn"), prevBtn = $("prevBtn"),
   nextBtn = $("nextBtn"), addSlideBtn = $("addSlideBtn"), delSlideBtn = $("delSlideBtn");
 const previewEl = $("preview"), pageInfoEl = $("pageInfo"), outlineList = $("outlineList"),
-  outlineCount = $("outlineCount"), printDeck = $("printDeck"),
+  outlineCount = $("outlineCount"), cloudLink = $("cloudLink"),
   edTitle = $("edTitle"), edBullets = $("edBullets"), edNotes = $("edNotes"),
   costHint = $("costHint"), toastEl = $("toast");
 
@@ -94,6 +96,7 @@ function handleErr(e) {
   return m;
 }
 const accentOf = (d) => d?.brandColor || (STYLES[d?.style] || STYLES.business).accent;
+const safeName = (s) => String(s || "anna-deck").replace(/[^\w\u4e00-\u9fa5 .-]/g, "_").slice(0, 80);
 
 // ---------- LLM prompt: outline-first, audience-aware ----------
 function buildSystemPrompt(lang, count, tone) {
@@ -315,6 +318,69 @@ function deleteCurrent() {
   renderAll(); saveDeck();
 }
 
+// ---------- delivery: local download + platform-hosted link ----------
+// A sandboxed iframe is not guaranteed to have `allow-downloads`. So every
+// export is ALSO handed to the Anna host via upload.inline (bypasses CSP and
+// the iframe sandbox entirely), which returns a presigned download URL. The
+// link is shown in-app and attached to the conversation as an artifact.
+async function deliverFile(blob, filename, mime) {
+  try { downloadBlob(blob, filename); } catch (e) { /* sandbox may block it */ }
+  if (!anna || !anna.upload || !anna.upload.inline) return { mode: "local" };
+  try {
+    const b64 = await blobToB64(blob);
+    const r = unwrap(await anna.upload.inline(
+      { filename, mime_type: mime, content_b64: b64, purpose: "user_artifact" },
+      { timeoutMs: 60000 }
+    ));
+    const url = r && r.download_url;
+    if (!url) return { mode: "local" };
+    showCloudLink(url, filename);
+    if (anna.chat && anna.chat.append_artifact) {
+      try {
+        await anna.chat.append_artifact({ artifact: {
+          kind: "presentation", app_slug: "anna-deck",
+          summary: "演示文稿已生成：" + filename,
+          payload_ref: url,
+          data: { filename, mime_type: mime, download_url: url },
+        } });
+      } catch (e) { /* artifact is a bonus, never block the download */ }
+    }
+    return { mode: "cloud", url };
+  } catch (e) {
+    console.warn("host upload unavailable, local download only:", e);
+    return { mode: "local" };
+  }
+}
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function blobToB64(blob) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(",")[1] || "");
+    fr.onerror = rej;
+    fr.readAsDataURL(blob);
+  });
+}
+function showCloudLink(url, filename) {
+  cloudLink.classList.remove("hidden");
+  cloudLink.innerHTML = `
+    <span class="cl-label">☁ 平台托管</span>
+    <a class="cl-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(filename)}</a>
+    <button class="cl-copy" type="button">复制链接</button>
+    <span class="cl-url" title="${escapeHtml(url)}">${escapeHtml(url)}</span>`;
+  const btn = cloudLink.querySelector(".cl-copy");
+  btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(url); btn.textContent = "已复制 ✓"; }
+    catch (e) { btn.textContent = "请手动复制链接"; }
+    setTimeout(() => (btn.textContent = "复制链接"), 2200);
+  });
+}
+
 // ---------- export: editable .pptx ----------
 async function exportPptx() {
   const d = state.deck; if (!d) return;
@@ -342,40 +408,81 @@ async function exportPptx() {
       if (s.notes) sl.addNotes(s.notes);
     });
     const blob = await pptx.write({ outputType: "blob" });
-    download(blob, (d.title || "anna-deck").replace(/[\\/:*?"<>|]/g, "_") + ".pptx");
-    toast("已导出可编辑 PPTX ⬇", false, "ok");
+    const res = await deliverFile(blob, safeName(d.title || "anna-deck") + ".pptx",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+    toast(res.mode === "cloud" ? "已导出 PPTX · 本地下载 + 云端链接 ⬇" : "已导出可编辑 PPTX ⬇", false, "ok");
   } catch (e) {
     toast("导出失败：" + handleErr(e), true);
   } finally { setBusy(false); }
 }
-function download(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
-}
 
-// ---------- export: PDF via browser print (keeps CJK glyphs, zero deps) ----------
-function exportPdf() {
+// ---------- export: real PDF (jsPDF + Canvas) ----------
+// window.print() is blocked in a sandboxed iframe without `allow-modals`, and
+// embedding a CJK font would bloat the bundle. Rendering each slide onto a
+// canvas lets the browser paint Chinese glyphs with system fonts; the PNG is
+// then embedded page-by-page into a real PDF. No host/browser modal needed.
+async function exportPdf() {
   const d = state.deck; if (!d) return;
-  const style = STYLES[d.style] || STYLES.business;
-  const accent = accentOf(d);
-  printDeck.innerHTML = d.slides.map((s, i) => {
-    const cover = i === 0;
-    return `<section class="print-slide" style="background:#${style.bg};color:#${style.text}">
-      <div class="ps-kicker" style="color:#${accent}">${cover ? "PRESENTATION" : (s.layout === "section" ? "SECTION" : String(i + 1).padStart(2, "0"))}</div>
-      <h2 class="ps-title">${escapeHtml(cover ? d.title : s.title)}</h2>
-      ${cover && d.subtitle ? `<p class="ps-sub">${escapeHtml(d.subtitle)}</p>` : ""}
-      ${!cover && s.bullets.length ? `<ul class="ps-bullets">${s.bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
-      ${s.image ? `<img class="ps-image" src="${s.image}" alt="" />` : ""}
-    </section>`;
-  }).join("");
-  toast("已调起打印，请在对话框选择「另存为 PDF」", false, "ok");
-  setTimeout(() => {
-    try { window.print(); }
-    catch (e) { toast("浏览器阻止了打印，请使用浏览器菜单另存为 PDF", true); }
-  }, 250);
+  if (!jsPDF) { toast("PDF 组件未加载，无法导出", true); return; }
+  setBusy(true, "正在生成 PDF…");
+  try {
+    const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: [1280, 720], compress: true });
+    d.slides.forEach((s, i) => {
+      if (i > 0) pdf.addPage([1280, 720], "landscape");
+      const canvas = renderSlideCanvas(s, i, d);
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 1280, 720);
+    });
+    const blob = pdf.output("blob");
+    const res = await deliverFile(blob, safeName(d.title || "anna-deck") + ".pdf", "application/pdf");
+    toast(res.mode === "cloud" ? "已导出 PDF · 本地下载 + 云端链接 ⬇" : "已导出 PDF ⬇", false, "ok");
+  } catch (e) {
+    toast("导出失败：" + handleErr(e), true);
+  } finally { setBusy(false); }
+}
+function wrapCanvasText(g, text, x, y, maxW, lineH) {
+  let line = "", yy = y;
+  for (const ch of String(text || "")) {
+    if (g.measureText(line + ch).width > maxW && line) {
+      g.fillText(line, x, yy); yy += lineH; line = ch;
+    } else line += ch;
+  }
+  if (line) g.fillText(line, x, yy);
+  return yy;
+}
+function renderSlideCanvas(s, i, d) {
+  const W = 1280, H = 720;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const st = STYLES[d.style] || STYLES.business;
+  const accent = "#" + accentOf(d);
+  const font = '"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif';
+  g.fillStyle = "#" + st.bg; g.fillRect(0, 0, W, H);
+  g.fillStyle = accent; g.fillRect(0, 0, W, 10);
+  g.textBaseline = "top";
+  if (i === 0) {
+    g.fillStyle = "#" + st.sub; g.font = "20px " + font;
+    g.fillText("PRESENTATION", 96, 150);
+    g.fillStyle = accent; g.font = "bold 52px " + font;
+    wrapCanvasText(g, d.title, 96, 250, W - 192, 68);
+    g.fillStyle = "#" + st.sub; g.font = "26px " + font;
+    wrapCanvasText(g, d.subtitle || "", 96, 400, W - 192, 40);
+  } else {
+    g.fillStyle = "#" + st.sub; g.font = "20px " + font;
+    g.fillText(s.layout === "section" ? "SECTION" : String(i + 1).padStart(2, "0"), 96, 80);
+    g.fillStyle = accent; g.font = "bold 42px " + font;
+    const endY = wrapCanvasText(g, s.title, 96, 130, W - 192, 54);
+    let y = Math.max(260, endY + 70);
+    (s.bullets || []).forEach((b) => {
+      g.fillStyle = accent;
+      g.beginPath(); g.arc(108, y + 15, 7, 0, Math.PI * 2); g.fill();
+      g.fillStyle = "#" + st.text; g.font = "26px " + font;
+      y = wrapCanvasText(g, b, 140, y, W - 250, 40) + 24;
+    });
+  }
+  g.fillStyle = "#" + st.sub; g.font = "18px " + font;
+  g.fillText(String(i + 1).padStart(2, "0") + " / " + String(d.slides.length).padStart(2, "0"), W - 150, H - 48);
+  return c;
 }
 
 // ---------- persistence (strip base64 images: runtime_state cap 256 KB) ----------
