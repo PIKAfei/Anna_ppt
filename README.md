@@ -7,7 +7,7 @@
 - 仓库：https://github.com/PIKAfei/Anna_ppt
 - App name：`Anna Deck · AI 做 PPT`，slug：`anna-deck`，上架标识 `@pikafei/anna-deck`
 - 平台：https://staging.anna.partners
-- 当前冻结版本 `1.0.2`，状态 `PENDING_REVIEW`，等管理员批准后执行 `release` 才在 App Store 公开
+- 当前冻结版本 `1.0.3`，状态 `PENDING_REVIEW`，等管理员批准后执行 `release` 才在 App Store 公开
 
 ## 我为什么做成这个样子
 
@@ -21,7 +21,7 @@
 
 先把 /developers 读完了才动手。Anna App 本质是一个塞进沙箱 iframe 的静态包，宿主已经把模型、存储、鉴权、文件上传这些能力通过 Host API 暴露出来了，那自己再带个后端、或者打包 Executa 就是多余的。所以最后是纯 UI App（schema 4）：一次 `llm.complete` 把整份大纲以结构化 JSON 拿回来，前端维护一份 Slide JSON，预览、编辑、调序全在本地，导出时用 PptxGenJS 生成 OOXML、用 jsPDF 生成 PDF。两个库都 vendor 进 `bundle/assets` 同源加载——平台 CSP 是 `default-src 'none'`，外链 CDN 根本过不了。草稿交给宿主的 `storage`，浅色/深色主题和语言跟着宿主广播走。
 
-额度这块我比较克制，毕竟题目里明说了会看。整份 PPT 只调一次模型，不用「每页一次」那种写法；调用参数里 `maxTokens` 卡在 4000，`modelPreferences` 给的是 `costPriority: 1`、`speedPriority: 0.5`、`intelligencePriority: 0.3`，让平台尽量挑便宜的可用模型；AI 配图默认关掉，勾了也只给封面和分节页配、最多三张，界面上写明耗额度。预览、编辑、导出都不花额度。另外放了个「示例」按钮，不调模型就能把预览 → 编辑 → 双格式导出整条链路走一遍，主要是方便验收，也方便我自己反复调试不用烧额度。
+额度这块我比较克制，毕竟题目里明说了会看。整份 PPT 只调一次模型，不用「每页一次」那种写法；调用参数里 `maxTokens` 卡在 4000，`modelPreferences` 给的是 `costPriority: 1`、`speedPriority: 0.5`、`intelligencePriority: 0.3`，让平台尽量挑便宜的可用模型；AI 配图默认关掉，勾了也只把封面和分节页当作默认建议、最多三张，界面上写明耗额度。预览、编辑、导出、本地上传与链接配图都不花额度。另外放了个「示例」按钮，不调模型就能把预览 → 编辑 → 双格式导出整条链路走一遍，主要是方便验收，也方便我自己反复调试不用烧额度。
 
 ## 几个实测才暴露的问题
 
@@ -31,7 +31,13 @@ PPTX 下载也是类似的坑。`<a download>` 能不能用取决于 iframe 有�
 
 发布流程比文档上看着绕。`apps list`、`set-handle`、`apps push` 全都要求 Verified Developer，没激活一律 403；而激活只能本人在网页上接受开发者条款，PAT 调那个接口会被拒。`release` 也不是想发就发，我 dry-run 试过，draft / pending_review 下直接被拒，得先 `submit-review` 等管理员批准。另外 `app.json` 里的 `slug` 是必填且创建后不能改的，第一版我漏了，push 的时候才被 CLI 揪出来。还有两个纯环境的小坑：本地 harness 第一次起不来是 `uvx` 首次拉 runtime 包超时，预热一次就好；`git ls-remote` 一开始失败只是 `known_hosts` 里没有 github.com 的主机密钥。
 
-配图后来还返工了一次。原先给图片模型的提示词只带了页标题，还写着 "abstract presentation visual"，结果不管什么主题都返回同一类流光装饰图，跟内容完全无关；更糟的是封面标题一长，右侧绝对定位的图片就直接压在文字上。我把配图描述并进了大纲：让 `llm.complete` 在同一次调用里为每页产出一段英文 `imagePrompt`，要求写具体场景和实物、点名主题关键词，再在 `image.generate` 前面拼上整份 deck 的主题和该页标题，并明确列一串禁止项（抽象流线、光带、科技波纹、几何渐变、文字和 logo）。这样不额外多一次模型调用，图就跟内容绑死了。布局改成左文右图分栏：有图时文字列收窄到 58%，图片沉到文字层下面，预览、PPTX、PDF 三处用同一套坐标。顺带发现原来 PPTX 封面根本没放图、PDF 压根没画图片，一起补齐了。
+配图返工过两次。第一次是图跑题：原先给图片模型的提示词只带了页标题，还写着 "abstract presentation visual"，结果不管什么主题都返回同一类流光装饰图；更糟的是封面标题一长，右侧绝对定位的图片就直接压在文字上。我把配图描述并进了大纲：让 `llm.complete` 在同一次调用里为每页产出一段英文 `imagePrompt`，要求写具体场景和实物、点名主题关键词，再在 `image.generate` 前面拼上整份 deck 的主题和该页标题，并明确列一串禁止项（抽象流线、光带、科技波纹、几何渐变、文字和 logo）。不额外多一次模型调用，图就跟内容绑死了。布局改成左文右图分栏：有图时文字列收窄到 58%，图片沉到文字层下面，预览、PPTX、PDF 三处用同一套坐标。顺带发现原来 PPTX 封面根本没放图、PDF 压根没画图片，一起补齐了。
+
+第二次是「用户凭什么不能自己决定哪一页有图」。查了一圈 Gamma、Microsoft 365 Copilot、WPS 365 的做法，主流根本不是「生成几张贴固定位置」，而是多来源可切、逐页绑定语义、全篇风格统一、用户随时替换——而且明确不追求每页都有图，数据页该用图表、纯装饰页不放图。所以这版把自动配图降级成默认建议，右侧加了「本页配图」：任意页都能 AI 生成、重生成或清除，来源可以是 AI、本地上传或图片链接，预览右上角标出「AI 生成 / 本地图片 / 链接图片」。上传和链接不花额度，AI 那张实测 68.97 CU，界面上直接写明，让人点之前心里有数。
+
+这一轮又自己踩出两个坑。草稿原来把所有 base64 图片剥掉，刷新就丢图；现在把图压成 560 px 宽的 JPEG 再存，用 `TextEncoder` 算字节数卡在 200 KB 预算内（宿主 `runtime_state` 上限 262144 字节），超了就从后往前丢图、最后退化成纯文本草稿，绝不把整份大纲写失败。另一个更隐蔽：`loadDeck()` 里写死了 `state.idx = 0`，我在第 3 页配完图刷新，跳回第 1 页还以为图没了，白查了半天——其实图一直好好存着。现在页码也一起写进草稿。演讲备注原来用 `bottom: 0` 绝对定位，有图分栏时会被裁掉半行，改成 flex 流里 `margin-top: auto`。
+
+外链图片这条路有个平台限制得说清楚：bundle 默认 CSP 是 `connect-src 'self'`，我在 `manifest.json` 里加了 `csp_overrides: {"connect-src": ["https:"]}` 才允许 fetch 外部图片，对方服务器还得允许 CORS。本地 harness 不设 CSP，所以本地测通不等于线上一定通，界面提示里写了「外链受平台沙箱与跨域限制」，失败时引导改用本地上传——这条路零额度且始终可用，是兜底。
 
 ## 真实测试
 
@@ -39,9 +45,11 @@ PPTX 下载也是类似的坑。`<a download>` 能不能用取决于 iframe 有�
 
 模型被路由到 `xiaomi/mimo-v2.5`，23 秒返回，`quotaConsumed 0.1698 CU`。大纲、每页要点和演讲者备注都解析对了，大纲列表和 16:9 画布渲染正常。导出的 pptx 78,616 字节，`PK\x03\x04` 开头，是合法 OOXML；PDF 182,345 字节，`%PDF-1.3`，6 页。平台托管链接和对话 artifact 都生成成功。`validate --strict`、JS 语法、DOM id 一致性也都过了，控制台只有一个 favicon 404，无害。
 
-配图返工之后，11 月 10 号又用真实额度跑了两遍完整流程，故意换两个主题看它会不会再跑偏：「碳中和与新能源汽车」的封面生成了光伏顶棚充电站里停着的电动车、远处一排风机和城市天际线；「海洋塑料污染与循环利用」的封面是海龟游过一堆漂浮的塑料瓶和渔网。两次 `image.generate` 的请求里分别出现了充电站 / 风机和塑料瓶 / 再生颗粒，说明提示词确实跟着大纲走，不是碰巧。带图的 5 页导出的 pptx 约 3.4 MB，`ppt/media/` 里有图片；PDF 419 KB，里面有 `/DCTDecode` 嵌入图像。预览里文字右边界 728、图片左边界 762，中间还留着 34 px，没有重叠。
+配图第一次返工之后，11 月 10 号用真实额度跑了两遍完整流程，故意换两个主题看它会不会再跑偏：「碳中和与新能源汽车」的封面生成了光伏顶棚充电站里停着的电动车、远处一排风机和城市天际线；「海洋塑料污染与循环利用」的封面是海龟游过一堆漂浮的塑料瓶和渔网。两次 `image.generate` 的请求里分别出现了充电站 / 风机和塑料瓶 / 再生颗粒，说明提示词确实跟着大纲走，不是碰巧。带图的 5 页导出的 pptx 约 3.4 MB，`ppt/media/` 里有图片；PDF 419 KB，里面有 `/DCTDecode` 嵌入图像。预览里文字右边界 728、图片左边界 762，中间还留着 34 px，没有重叠。
 
-额度方面，LLM 一次一直只有零点几 CU（0.219 / 0.285），真正花钱的是图片生成，所以「配图默认关闭、最多三张」这个限制我留着没动。
+第二次返工之后又跑了一遍，重点验「用户能不能自己决定哪一页有图」。用示例（零额度）跳到第 3 页——一页普通 bullets 页，自动配图逻辑永远不会选它——点「AI 生成配图」，真实 `image.generate` 返回一张图，右上角标「AI 生成」，按钮变成「AI 重生成配图」，清除按钮可用，文字与图片没有重叠。接着清除、上传本地 PNG（标「本地图片」）、把平台返回的 R2 图片链接贴进去（标「链接图片」），三条来源都通。单张 AI 图这次实测 68.9655 CU，确实是大头。刷新 iframe 后草稿读回：`draftIdx=2`、`pageInfo` 仍是「3 / 6」、第 3 页压缩图 5119 字符、来源 `upload`、预览和标签都在，前后完全一致。PPTX 83,138 字节含 `ppt/media/`，PDF 190,478 字节含 `/DCTDecode`，两个 toast 都成功。
+
+额度方面，LLM 一次一直只有零点几 CU（0.1698 / 0.219 / 0.285），真正花钱的是图片生成，约 69 CU 一张。所以默认关配图、自动配图限量、给不花额度的上传通路，这几条我都留着。
 
 ## 本地跑和发布
 
@@ -54,29 +62,29 @@ anna-app dev --llm-account https://staging.anna.partners  # 连真实模型
 anna-app login --host https://staging.anna.partners
 anna-app account set-handle pikafei
 anna-app apps push                                        # 上传工作草稿
-anna-app apps cut 1.0.2 --changelog "topic-bound images, no text overlap"
+anna-app apps cut 1.0.3 --changelog "per-slide image controls, three image sources, draft persistence"
 anna-app apps submit-review                               # DRAFT → PENDING_REVIEW
 # 管理员批准之后：
-anna-app apps release 1.0.2
+anna-app apps release 1.0.3
 anna-app apps status anna-deck
 ```
 
-状态是 `DRAFT → PENDING_REVIEW → APPROVED → PUBLISHED`，`APPROVED` 可以直链安装，`PUBLISHED` 才在商店里公开可见。审核期间如果又 cut 了新版本，要再跑一次 `submit-review` 把候选重新 pin 到最新版本，导出加固和配图返工这两次都是这么做的。
+状态是 `DRAFT → PENDING_REVIEW → APPROVED → PUBLISHED`，`APPROVED` 可以直链安装，`PUBLISHED` 才在商店里公开可见。审核期间如果又 cut 了新版本，要再跑一次 `submit-review` 把候选重新 pin 到最新版本，导出加固和两次配图返工都是这么做的。
 
 ## 文件结构
 
 ```
 anna-deck/
-├── manifest.json          # App 清单（schema 4，纯 UI，无 Executa）
+├── manifest.json          # App 清单（schema 4，纯 UI，无 Executa，connect-src https: 供外链图片）
 ├── app.json               # 商店元数据（name / slug / tagline / description / category）
 ├── bundle/
-│   ├── index.html         # 大纲 / 画布 / 属性三段式 + 云端交付链接区
-│   ├── app.js             # 宿主连接、LLM、配图、大纲编辑、预览、双格式导出、统一交付层
-│   ├── styles.css         # 主题感知样式
+│   ├── index.html         # 大纲 / 画布 / 逐页编辑 + 本页配图工具 + 云端交付链接区
+│   ├── app.js             # 宿主连接、LLM、配图三来源、大纲编辑、预览、双格式导出、统一交付层
+│   ├── styles.css         # 主题感知样式、左右分栏、来源标签
 │   └── assets/
 │       ├── pptxgen.bundle.js  # PptxGenJS（同源）
 │       └── jspdf.umd.min.js   # jsPDF（同源）
 └── README.md
 ```
 
-还有没做完的：审核这一步在平台管理员侧，我这边能做的都做完了；配图目前只给封面和分节页、最多三张，是为了控额度，没做成每页都能单独重生成。模板也只有五套，谈不上设计系统，够用而已。
+还有没做完的：审核这一步在平台管理员侧，我这边能做的都做完了；外链图片受 CORS 限制，本地上传是兜底；没做正版图库检索（平台没有这个 Host API，也不该自己造），全篇图像风格预设（摄影 / 插画 / 3D）也还没做，目前只靠模板明暗和配色注入。模板五套，谈不上设计系统，够用而已。

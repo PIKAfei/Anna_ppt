@@ -38,7 +38,12 @@ const TONE_TEXT = {
   pitch: "融资路演：市场机会、产品壁垒、商业模式与增长曲线，强调可量化证据",
 };
 
-const state = { deck: null, idx: 0 };
+const IMAGE_SOURCE_LABEL = { ai: "AI 生成", upload: "本地图片", url: "链接图片" };
+// Host runtime_state caps a single key at 262144 bytes. Keep comfortably below
+// it so the outline (CJK text) still fits alongside compacted illustrations.
+const DRAFT_BYTE_BUDGET = 200000;
+
+const state = { deck: null, idx: 0, busy: false };
 let anna = null;
 
 // ---------- DOM ----------
@@ -49,10 +54,18 @@ const topicEl = $("topic"), langEl = $("lang"), countEl = $("count"),
 const genBtn = $("genBtn"), sampleBtn = $("sampleBtn"), exportBtn = $("exportBtn"),
   pdfBtn = $("pdfBtn"), regenBtn = $("regenBtn"), prevBtn = $("prevBtn"),
   nextBtn = $("nextBtn"), addSlideBtn = $("addSlideBtn"), delSlideBtn = $("delSlideBtn");
+const imgAiBtn = $("imgAiBtn"), imgUploadBtn = $("imgUploadBtn"), imgFileEl = $("imgFile"),
+  imgClearBtn = $("imgClearBtn"), imgUrlEl = $("imgUrl"), imgUrlBtn = $("imgUrlBtn"),
+  imgStatus = $("imgStatus");
 const previewEl = $("preview"), pageInfoEl = $("pageInfo"), outlineList = $("outlineList"),
   outlineCount = $("outlineCount"), cloudLink = $("cloudLink"),
   edTitle = $("edTitle"), edBullets = $("edBullets"), edNotes = $("edNotes"),
   costHint = $("costHint"), toastEl = $("toast");
+
+const ALL_BUTTONS = () => [
+  genBtn, sampleBtn, exportBtn, pdfBtn, regenBtn, prevBtn, nextBtn,
+  addSlideBtn, delSlideBtn, imgAiBtn, imgUploadBtn, imgClearBtn, imgUrlBtn,
+];
 
 // ---------- helpers ----------
 function escapeHtml(s) {
@@ -81,8 +94,9 @@ function toast(msg, isErr = false, kind = null) {
   toast._t = setTimeout(() => toastEl.classList.add("hidden"), 3400);
 }
 function setBusy(busy, msg) {
-  [genBtn, sampleBtn, exportBtn, pdfBtn, regenBtn, prevBtn, nextBtn, addSlideBtn, delSlideBtn]
-    .forEach((b) => (b.disabled = busy));
+  state.busy = busy;
+  ALL_BUTTONS().forEach((b) => (b.disabled = busy));
+  imgUrlEl.disabled = busy || !state.deck;
   genBtn.textContent = busy && msg ? msg : "✨ 生成大纲";
   if (!busy) renderNav();
 }
@@ -132,6 +146,7 @@ function parseDeck(text, meta) {
     layout: x.layout || "bullets",
     imagePrompt: String(x.imagePrompt || ""),
     image: null,
+    imageSource: null,
   }));
   return {
     title: obj.title || "未命名演示",
@@ -161,10 +176,12 @@ async function generateDeck() {
     if (!deck.slides.length) throw new Error("AI 返回内容无法解析，请重试");
     state.deck = deck; state.idx = 0;
     await saveDeck(); renderAll();
-    if (withImagesEl.checked) await generateImages(deck);
+    let failedImages = 0;
+    if (withImagesEl.checked) failedImages = (await generateImages(deck)).fail;
     const used = res?._meta?.quotaConsumed;
     costHint.textContent = used != null ? `本次生成消耗约 ${used} CU` : "";
-    toast("大纲已生成，可直接编辑 ✏️", false, "ok");
+    if (failedImages) toast(`大纲已生成，${failedImages} 张自动配图失败，可在「本页配图」里逐页补图`, true);
+    else toast("大纲已生成，可直接编辑 ✏️", false, "ok");
   } catch (e) {
     toast(handleErr(e), true);
   } finally { setBusy(false); }
@@ -193,11 +210,15 @@ function imagePromptFor(deck, s) {
   ].join(" ");
 }
 
+// Automatic images are only a DEFAULT SUGGESTION: cover + section pages,
+// capped at three to keep CU spend predictable. Page count and placement are
+// ultimately the user's call via the per-slide tools below.
 async function generateImages(deck) {
   const targets = [];
   deck.slides.forEach((s, i) => {
     if ((i === 0 || s.layout === "section") && targets.length < 3) targets.push(i);
   });
+  let ok = 0, fail = 0;
   for (let k = 0; k < targets.length; k++) {
     const i = targets[k];
     try {
@@ -207,20 +228,138 @@ async function generateImages(deck) {
         { timeoutMs: 120000 }
       ));
       const url = data?.images?.[0]?.url;
-      if (url) { deck.slides[i].image = await urlToBase64(url); renderAll(); }
-    } catch (e) { console.warn("image gen failed:", e); }
+      if (!url) throw new Error("图片生成未返回图片");
+      deck.slides[i].image = await normalizeImage(await urlToBase64(url));
+      deck.slides[i].imageSource = "ai";
+      ok++; renderAll();
+    } catch (e) { fail++; console.warn("image gen failed:", e); }
   }
   await saveDeck();
+  return { ok, fail };
 }
 async function urlToBase64(url) {
   const resp = await fetch(url);
+  if (!resp.ok) throw new Error("图片下载失败 HTTP " + resp.status);
   const blob = await resp.blob();
+  if (blob.type && !/^image\//.test(blob.type)) throw new Error("链接返回的不是图片");
   return await new Promise((res, rej) => {
     const fr = new FileReader();
-    fr.onload = () => res(fr.result);
-    fr.onerror = rej;
+    fr.onload = () => res(String(fr.result));
+    fr.onerror = () => rej(new Error("图片读取失败"));
     fr.readAsDataURL(blob);
   });
+}
+
+// ---------- per-slide image tools (P0 + P1) ----------
+const slimCache = new WeakMap();
+function compactImage(dataUrl, maxW, quality) {
+  return new Promise((res) => {
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const scale = Math.min(1, maxW / im.width);
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(im.width * scale));
+        c.height = Math.max(1, Math.round(im.height * scale));
+        c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+        res(c.toDataURL("image/jpeg", quality));
+      } catch (e) { res(null); }
+    };
+    im.onerror = () => res(null);
+    im.src = dataUrl;
+  });
+}
+async function normalizeImage(dataUrl) {
+  if (typeof dataUrl !== "string" || !/^data:image\//.test(dataUrl)) throw new Error("图片数据无效");
+  if (dataUrl.length < 1200000) return dataUrl;
+  return (await compactImage(dataUrl, 1600, 0.88)) || dataUrl;
+}
+async function slimImageFor(s) {
+  if (!s.image) return null;
+  const hit = slimCache.get(s);
+  if (hit && hit.src === s.image) return hit.slim;
+  const slim = await compactImage(s.image, 560, 0.62);
+  slimCache.set(s, { src: s.image, slim });
+  return slim;
+}
+function renderImageTools() {
+  const d = state.deck, s = d && d.slides[state.idx];
+  const has = !!(s && s.image);
+  const blocked = !d || state.busy;
+  [imgAiBtn, imgUploadBtn, imgUrlBtn, imgUrlEl, imgClearBtn].forEach((el) => (el.disabled = blocked));
+  imgClearBtn.disabled = blocked || !has;
+  imgAiBtn.textContent = has && s.imageSource === "ai" ? "AI 重生成配图" : "AI 生成配图";
+  imgStatus.textContent = has ? (IMAGE_SOURCE_LABEL[s.imageSource] || "已有配图") : "本页暂无配图";
+}
+async function setSlideImage(dataUrl, source) {
+  const d = state.deck; if (!d) return;
+  const s = d.slides[state.idx];
+  s.image = await normalizeImage(dataUrl);
+  s.imageSource = source;
+  renderAll();
+  await saveDeck();
+}
+function clearSlideImage() {
+  const d = state.deck; if (!d) return;
+  const s = d.slides[state.idx];
+  if (!s.image) return;
+  s.image = null; s.imageSource = null;
+  renderAll(); saveDeck();
+  toast("已清除本页配图", false, "ok");
+}
+async function generateSlideImage() {
+  const d = state.deck; if (!d) return;
+  if (!anna || !anna.image || !anna.image.generate) {
+    toast("当前环境无法调用图片生成，请改用「上传图片」", true); return;
+  }
+  setBusy(true, "正在为本页生成配图…");
+  try {
+    const res = await anna.image.generate(
+      { prompt: imagePromptFor(d, d.slides[state.idx]), n: 1, size: "1280x720" },
+      { timeoutMs: 120000 }
+    );
+    const data = unwrap(res);
+    const url = data?.images?.[0]?.url;
+    if (!url) throw new Error("图片生成未返回图片");
+    await setSlideImage(await urlToBase64(url), "ai");
+    const used = res?._meta?.quotaConsumed ?? data?._meta?.quotaConsumed;
+    toast(used != null ? `本页配图已生成 · 消耗约 ${used} CU` : "本页配图已生成", false, "ok");
+  } catch (e) { toast("配图失败：" + handleErr(e), true); }
+  finally { setBusy(false); }
+}
+async function onUploadImage() {
+  const f = imgFileEl.files && imgFileEl.files[0];
+  imgFileEl.value = "";
+  if (!f) return;
+  if (/svg/i.test(f.type)) { toast("暂不支持 SVG，请改用 PNG / JPG / WebP", true); return; }
+  if (!/^image\//.test(f.type)) { toast("请选择图片文件", true); return; }
+  if (f.size > 8 * 1024 * 1024) { toast("图片超过 8 MB，请换一张小一些的", true); return; }
+  setBusy(true, "正在读取图片…");
+  try {
+    const dataUrl = await new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result));
+      fr.onerror = () => rej(new Error("读取文件失败"));
+      fr.readAsDataURL(f);
+    });
+    await setSlideImage(dataUrl, "upload");
+    toast("已使用本地图片（不消耗额度）", false, "ok");
+  } catch (e) { toast("图片读取失败：" + handleErr(e), true); }
+  finally { setBusy(false); }
+}
+async function useImageUrl() {
+  const d = state.deck; if (!d) return;
+  const url = imgUrlEl.value.trim();
+  if (!/^https?:\/\//i.test(url)) { toast("请填写 http(s) 开头的图片链接", true); return; }
+  setBusy(true, "正在读取链接图片…");
+  try {
+    const dataUrl = await urlToBase64(url);
+    await setSlideImage(dataUrl, "url");
+    imgUrlEl.value = "";
+    toast("已使用链接图片（不消耗额度）", false, "ok");
+  } catch (e) {
+    toast("链接图片读取失败（平台沙箱或跨域限制），请下载后改用「上传图片」：" + handleErr(e), true);
+  } finally { setBusy(false); }
 }
 
 // ---------- sample: general topic, zero-credit ----------
@@ -232,12 +371,12 @@ function loadSample() {
     style: styleEl.value || "business",
     brandColor: brandColorEl.value.replace("#", ""),
     slides: [
-      { title: "AI 如何重塑个人生产力", bullets: ["从工具到协作伙伴", "一次关于效率的范式转移", "人人都用得上的三个场景"], notes: "开场先抛问题：你上一次用 AI 省下的时间，用在了哪里？", layout: "title", image: null },
-      { title: "今天聊什么", bullets: ["为什么是现在", "三类高频场景", "风险与边界", "上手建议"], notes: "30 秒交代结构，让听众有预期。", layout: "section", image: null },
-      { title: "为什么是现在", bullets: ["大模型能力跨过可用阈值", "使用成本大幅下降", "与日常工具集成趋于成熟"], notes: "强调拐点来自能力、成本、集成三者同时到位。", layout: "bullets", image: null },
-      { title: "三类高频场景", bullets: ["写作与摘要：从草稿到定稿", "资料整理：从杂乱到结构化", "学习辅助：把难点讲成例子"], notes: "每个场景给一个学生和上班族都能对号入座的例子。", layout: "bullets", image: null },
-      { title: "风险与边界", bullets: ["幻觉与事实核查", "隐私与数据边界", "人的判断不可外包"], notes: "坦诚谈风险，反而增加可信度。", layout: "bullets", image: null },
-      { title: "上手建议", bullets: ["从一个小场景开始", "积累可复用的提示模板", "把 AI 当协作者而非替代"], notes: "结尾给出可执行的下一步。", layout: "bullets", image: null },
+      { title: "AI 如何重塑个人生产力", bullets: ["从工具到协作伙伴", "一次关于效率的范式转移", "人人都用得上的三个场景"], notes: "开场先抛问题：你上一次用 AI 省下的时间，用在了哪里？", layout: "title", imagePrompt: "", image: null, imageSource: null },
+      { title: "今天聊什么", bullets: ["为什么是现在", "三类高频场景", "风险与边界", "上手建议"], notes: "30 秒交代结构，让听众有预期。", layout: "section", imagePrompt: "", image: null, imageSource: null },
+      { title: "为什么是现在", bullets: ["大模型能力跨过可用阈值", "使用成本大幅下降", "与日常工具集成趋于成熟"], notes: "强调拐点来自能力、成本、集成三者同时到位。", layout: "bullets", imagePrompt: "", image: null, imageSource: null },
+      { title: "三类高频场景", bullets: ["写作与摘要：从草稿到定稿", "资料整理：从杂乱到结构化", "学习辅助：把难点讲成例子"], notes: "每个场景给一个学生和上班族都能对号入座的例子。", layout: "bullets", imagePrompt: "", image: null, imageSource: null },
+      { title: "风险与边界", bullets: ["幻觉与事实核查", "隐私与数据边界", "人的判断不可外包"], notes: "坦诚谈风险，反而增加可信度。", layout: "bullets", imagePrompt: "", image: null, imageSource: null },
+      { title: "上手建议", bullets: ["从一个小场景开始", "积累可复用的提示模板", "把 AI 当协作者而非替代"], notes: "结尾给出可执行的下一步。", layout: "bullets", imagePrompt: "", image: null, imageSource: null },
     ],
   };
   state.idx = 0; saveDeck(); renderAll();
@@ -248,11 +387,12 @@ function loadSample() {
 function renderAll() { renderPreview(); renderEditor(); renderNav(); renderOutline(); }
 function renderNav() {
   const d = state.deck;
-  [exportBtn, pdfBtn, regenBtn, addSlideBtn, delSlideBtn].forEach((b) => (b.disabled = !d));
-  if (!d) { pageInfoEl.textContent = "— / —"; return; }
+  [exportBtn, pdfBtn, regenBtn, addSlideBtn, delSlideBtn].forEach((b) => (b.disabled = !d || state.busy));
+  if (!d) { pageInfoEl.textContent = "— / —"; renderImageTools(); return; }
   pageInfoEl.textContent = `${state.idx + 1} / ${d.slides.length}`;
-  prevBtn.disabled = state.idx === 0;
-  nextBtn.disabled = state.idx === d.slides.length - 1;
+  prevBtn.disabled = state.busy || state.idx === 0;
+  nextBtn.disabled = state.busy || state.idx === d.slides.length - 1;
+  renderImageTools();
 }
 function renderPreview() {
   const d = state.deck;
@@ -280,7 +420,10 @@ function renderPreview() {
   }
   if (s.notes) html += `<div class="sp-notes">备注：${escapeHtml(s.notes)}</div>`;
   html += "</div>";
-  if (hasImage) html += `<img class="sp-image" src="${escapeHtml(s.image)}" alt="" />`;
+  if (hasImage) {
+    html += `<img class="sp-image" src="${escapeHtml(s.image)}" alt="" />`;
+    html += `<span class="sp-img-badge">${IMAGE_SOURCE_LABEL[s.imageSource] || "配图"}</span>`;
+  }
   previewEl.innerHTML = html;
 }
 function renderEditor() {
@@ -315,7 +458,7 @@ function onEdit() {
   s.title = edTitle.value;
   s.bullets = edBullets.value.split("\n").map((x) => x.trim()).filter(Boolean);
   s.notes = edNotes.value;
-  renderPreview(); renderOutline(); saveDeck();
+  renderPreview(); renderOutline(); scheduleSave();
 }
 function onOutlineClick(e) {
   const d = state.deck; if (!d) return;
@@ -330,22 +473,22 @@ function onOutlineClick(e) {
       d.slides.splice(i, 1);
       state.idx = Math.max(0, Math.min(state.idx, d.slides.length - 1));
     } else return;
-    renderAll(); saveDeck(); return;
+    renderAll(); scheduleSave(); return;
   }
   const li = e.target.closest("li[data-i]");
   if (li) { state.idx = +li.dataset.i; renderAll(); }
 }
 function addSlide() {
   const d = state.deck; if (!d) return;
-  d.slides.splice(state.idx + 1, 0, { title: "新幻灯片", bullets: ["要点一", "要点二"], notes: "", layout: "bullets", imagePrompt: "", image: null });
+  d.slides.splice(state.idx + 1, 0, { title: "新幻灯片", bullets: ["要点一", "要点二"], notes: "", layout: "bullets", imagePrompt: "", image: null, imageSource: null });
   state.idx++;
-  renderAll(); saveDeck();
+  renderAll(); scheduleSave();
 }
 function deleteCurrent() {
   const d = state.deck; if (!d || d.slides.length <= 1) { toast("至少保留一页", true); return; }
   d.slides.splice(state.idx, 1);
   state.idx = Math.max(0, Math.min(state.idx, d.slides.length - 1));
-  renderAll(); saveDeck();
+  renderAll(); scheduleSave();
 }
 
 // ---------- delivery: local download + platform-hosted link ----------
@@ -546,13 +689,41 @@ async function renderSlideCanvas(s, i, d) {
   return c;
 }
 
-// ---------- persistence (strip base64 images: runtime_state cap 256 KB) ----------
+// ---------- persistence ----------
+// The old version stripped every image from the draft, so a refresh silently
+// lost all illustrations. Now images are downscaled to a compact JPEG, with a
+// byte budget; if the deck still cannot fit under runtime_state's cap we drop
+// images from the end first, and finally fall back to a text-only draft.
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveDeck(); }, 350);
+}
 async function saveDeck() {
   if (!anna || !state.deck) return;
+  const bare = () => ({
+    ...state.deck,
+    idx: state.idx,
+    slides: state.deck.slides.map((s) => ({ ...s, image: null, imageSource: null })),
+  });
   try {
-    const slim = { ...state.deck, slides: state.deck.slides.map((s) => ({ ...s, image: null })) };
-    await anna.storage.set({ key: "deck", value: slim });
-  } catch (e) { /* ignore */ }
+    const slides = [];
+    for (const s of state.deck.slides) {
+      slides.push({ ...s, image: await slimImageFor(s), imageSource: s.image ? s.imageSource : null });
+    }
+    let draft = { ...state.deck, idx: state.idx, slides };
+    const byteLen = () => new TextEncoder().encode(JSON.stringify(draft)).length;
+    let bytes = byteLen();
+    if (bytes > DRAFT_BYTE_BUDGET) {
+      for (let i = slides.length - 1; i >= 0 && bytes > DRAFT_BYTE_BUDGET; i--) {
+        if (slides[i].image) { slides[i].image = null; bytes = byteLen(); }
+      }
+    }
+    if (bytes > DRAFT_BYTE_BUDGET) draft = bare();
+    await anna.storage.set({ key: "deck", value: draft });
+  } catch (e) {
+    try { await anna.storage.set({ key: "deck", value: bare() }); } catch (_) { /* ignore */ }
+  }
 }
 async function loadDeck() {
   if (!anna) return;
@@ -560,7 +731,8 @@ async function loadDeck() {
     const g = unwrap(await anna.storage.get({ key: "deck" }));
     const value = g?.value ?? g;
     if (value && Array.isArray(value.slides) && value.slides.length) {
-      state.deck = value; state.idx = 0;
+      state.deck = value;
+      state.idx = Math.max(0, Math.min(Number(value.idx) || 0, value.slides.length - 1));
       styleEl.value = value.style || "business";
       brandColorEl.value = "#" + (value.brandColor || STYLES[styleEl.value].accent);
       renderAll();
@@ -579,19 +751,25 @@ function wire() {
   nextBtn.addEventListener("click", () => { if (state.deck && state.idx < state.deck.slides.length - 1) { state.idx++; renderAll(); } });
   addSlideBtn.addEventListener("click", addSlide);
   delSlideBtn.addEventListener("click", deleteCurrent);
+  imgAiBtn.addEventListener("click", generateSlideImage);
+  imgUploadBtn.addEventListener("click", () => imgFileEl.click());
+  imgFileEl.addEventListener("change", onUploadImage);
+  imgClearBtn.addEventListener("click", clearSlideImage);
+  imgUrlBtn.addEventListener("click", useImageUrl);
+  imgUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") useImageUrl(); });
   outlineList.addEventListener("click", onOutlineClick);
   [edTitle, edBullets, edNotes].forEach((el) => el.addEventListener("input", onEdit));
   styleEl.addEventListener("change", () => {
     brandColorEl.value = "#" + STYLES[styleEl.value].accent;
-    if (state.deck) { state.deck.style = styleEl.value; state.deck.brandColor = brandColorEl.value.slice(1); renderAll(); saveDeck(); }
+    if (state.deck) { state.deck.style = styleEl.value; state.deck.brandColor = brandColorEl.value.slice(1); renderAll(); scheduleSave(); }
   });
   brandColorEl.addEventListener("input", () => {
     if (state.deck) { state.deck.brandColor = brandColorEl.value.slice(1); renderPreview(); renderOutline(); }
   });
-  brandColorEl.addEventListener("change", saveDeck);
+  brandColorEl.addEventListener("change", scheduleSave);
 }
 async function main() {
-  wire(); renderOutline();
+  wire(); renderOutline(); renderImageTools();
   try {
     anna = await AnnaAppRuntime.connect();
     document.documentElement.dataset.theme = anna.theme || "light";

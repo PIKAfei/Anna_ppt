@@ -75,8 +75,9 @@
 
         <label class="check">
           <input type="checkbox" id="withImages" />
-          <span>AI 按每页主题配图（默认关闭，每张消耗较多额度）</span>
+          <span>生成时自动配图（默认关闭，每张消耗较多额度）</span>
         </label>
+        <p class="hint">自动配图只是默认建议：封面 + 分节页，最多 3 张。任意页都能在右侧「本页配图」里自行添加、重生成或清除。</p>
 
         <div class="actions">
           <button id="genBtn" class="primary">✨ 生成大纲</button>
@@ -135,6 +136,24 @@
               <span>演讲备注</span>
               <textarea id="edNotes" rows="3" placeholder="演讲时可以展开的内容…" disabled></textarea>
             </label>
+          </div>
+
+          <div class="img-tools">
+            <div class="img-tools-head">
+              <span>本页配图</span>
+              <span id="imgStatus" class="img-status">本页暂无配图</span>
+            </div>
+            <div class="img-tools-row">
+              <button id="imgAiBtn" class="mini" disabled>AI 生成配图</button>
+              <button id="imgUploadBtn" class="mini" disabled>上传图片</button>
+              <input id="imgFile" type="file" accept="image/*" hidden />
+              <button id="imgClearBtn" class="mini danger" disabled>清除</button>
+            </div>
+            <div class="img-tools-row">
+              <input id="imgUrl" type="url" placeholder="或粘贴图片链接 https://…" disabled />
+              <button id="imgUrlBtn" class="mini" disabled>使用</button>
+            </div>
+            <p class="img-tip">AI 生成消耗额度（实测约 69 CU / 张），上传与链接不消耗；本地上传始终可用，外链受平台沙箱与跨域限制。配图与当前页码会随草稿保存（压缩存储）。</p>
           </div>
         </div>
 
