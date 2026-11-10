@@ -7,7 +7,7 @@
 - 仓库：https://github.com/PIKAfei/Anna_ppt
 - App name：`Anna Deck · AI 做 PPT`，slug：`anna-deck`，上架标识 `@pikafei/anna-deck`
 - 平台：https://staging.anna.partners
-- 当前冻结版本 `1.0.3`，状态 `PENDING_REVIEW`，等管理员批准后执行 `release` 才在 App Store 公开
+- 当前冻结版本 `1.0.4`，状态 `PENDING_REVIEW`，等管理员批准后执行 `release` 才在 App Store 公开
 
 ## 我为什么做成这个样子
 
@@ -35,7 +35,7 @@ PPTX 下载也是类似的坑。`<a download>` 能不能用取决于 iframe 有�
 
 第二次是「用户凭什么不能自己决定哪一页有图」。查了一圈 Gamma、Microsoft 365 Copilot、WPS 365 的做法，主流根本不是「生成几张贴固定位置」，而是多来源可切、逐页绑定语义、全篇风格统一、用户随时替换——而且明确不追求每页都有图，数据页该用图表、纯装饰页不放图。所以这版把自动配图降级成默认建议，右侧加了「本页配图」：任意页都能 AI 生成、重生成或清除，来源可以是 AI、本地上传或图片链接，预览右上角标出「AI 生成 / 本地图片 / 链接图片」。上传和链接不花额度，AI 那张实测 68.97 CU，界面上直接写明，让人点之前心里有数。
 
-这一轮又自己踩出两个坑。草稿原来把所有 base64 图片剥掉，刷新就丢图；现在把图压成 560 px 宽的 JPEG 再存，用 `TextEncoder` 算字节数卡在 200 KB 预算内（宿主 `runtime_state` 上限 262144 字节），超了就从后往前丢图、最后退化成纯文本草稿，绝不把整份大纲写失败。另一个更隐蔽：`loadDeck()` 里写死了 `state.idx = 0`，我在第 3 页配完图刷新，跳回第 1 页还以为图没了，白查了半天——其实图一直好好存着。现在页码也一起写进草稿。演讲备注原来用 `bottom: 0` 绝对定位，有图分栏时会被裁掉半行，改成 flex 流里 `margin-top: auto`。
+这一轮又自己踩出两个坑。草稿原来把所有 base64 图片剥掉，刷新就丢图；现在把图压成 560 px 宽的 JPEG 再存，用 `TextEncoder` 算字节数卡在 200 KB 预算内（宿主 `runtime_state` 上限 262144 字节），超了就从后往前丢图、最后退化成纯文本草稿，绝不把整份大纲写失败。另一个更隐蔽：`loadDeck()` 里写死了 `state.idx = 0`，我在第 3 页配完图刷新，跳回第 1 页还以为图没了，白查了半天——其实图一直好好存着。现在页码也一起写进草稿。演讲备注原来用 `bottom: 0` 绝对定位，有图分栏时会被裁掉半行，改成 flex 流里 `margin-top: auto`。还有个只有截全屏才看出来的：App 默认窗口高 700 px，16:9 画布按宽度撑开后整个超出预览区，底部备注连着画布一起被 `overflow` 截掉。加了 `fitPreview()`，按预览区可用高度反算宽度，窗口 resize 时重算，画布才完整落进可视区。
 
 外链图片这条路有个平台限制得说清楚：bundle 默认 CSP 是 `connect-src 'self'`，我在 `manifest.json` 里加了 `csp_overrides: {"connect-src": ["https:"]}` 才允许 fetch 外部图片，对方服务器还得允许 CORS。本地 harness 不设 CSP，所以本地测通不等于线上一定通，界面提示里写了「外链受平台沙箱与跨域限制」，失败时引导改用本地上传——这条路零额度且始终可用，是兜底。
 
@@ -62,10 +62,10 @@ anna-app dev --llm-account https://staging.anna.partners  # 连真实模型
 anna-app login --host https://staging.anna.partners
 anna-app account set-handle pikafei
 anna-app apps push                                        # 上传工作草稿
-anna-app apps cut 1.0.3 --changelog "per-slide image controls, three image sources, draft persistence"
+anna-app apps cut 1.0.4 --changelog "per-slide image controls, three image sources, draft persistence"
 anna-app apps submit-review                               # DRAFT → PENDING_REVIEW
 # 管理员批准之后：
-anna-app apps release 1.0.3
+anna-app apps release 1.0.4
 anna-app apps status anna-deck
 ```
 

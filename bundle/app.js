@@ -73,6 +73,18 @@ function escapeHtml(s) {
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
 }
+// The app window is often only ~700px tall, so a 16:9 canvas sized purely by
+// width would overflow the preview area and clip the speaker notes at the
+// bottom. Constrain width by the available height as well.
+function fitPreview() {
+  const wrap = document.querySelector(".preview-wrap");
+  if (!wrap) return;
+  const availW = wrap.clientWidth - 36;
+  const availH = wrap.clientHeight - 36;
+  if (availH <= 0) return;
+  const w = Math.min(availW > 0 ? availW : 860, 860, (availH * 16) / 9);
+  previewEl.style.width = Math.max(300, Math.floor(w)) + "px";
+}
 // SDK proxies resolve with the bare result on success, but some host versions
 // return the raw {ok, result} / {ok:false, error} envelope. Handle both.
 function unwrap(res) {
@@ -384,7 +396,7 @@ function loadSample() {
 }
 
 // ---------- render ----------
-function renderAll() { renderPreview(); renderEditor(); renderNav(); renderOutline(); }
+function renderAll() { renderPreview(); renderEditor(); renderNav(); renderOutline(); fitPreview(); }
 function renderNav() {
   const d = state.deck;
   [exportBtn, pdfBtn, regenBtn, addSlideBtn, delSlideBtn].forEach((b) => (b.disabled = !d || state.busy));
@@ -767,9 +779,10 @@ function wire() {
     if (state.deck) { state.deck.brandColor = brandColorEl.value.slice(1); renderPreview(); renderOutline(); }
   });
   brandColorEl.addEventListener("change", scheduleSave);
+  window.addEventListener("resize", fitPreview);
 }
 async function main() {
-  wire(); renderOutline(); renderImageTools();
+  wire(); renderOutline(); renderImageTools(); fitPreview();
   try {
     anna = await AnnaAppRuntime.connect();
     document.documentElement.dataset.theme = anna.theme || "light";
