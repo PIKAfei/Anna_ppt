@@ -105,11 +105,12 @@ function buildSystemPrompt(lang, count, tone) {
     "你是专业的演示文稿策划顾问。基于用户给出的主题、材料或大纲，产出一份结构清晰、内容扎实的幻灯片大纲。",
     "规则：",
     "1. 严格只输出一个 JSON 对象，不要解释、不要 markdown 代码块、不要多余文字。",
-    "2. 结构：{\"title\":总标题, \"subtitle\":副标题, \"slides\":[{\"title\":每页标题, \"bullets\":[要点字符串数组], \"notes\":演讲备注字符串, \"layout\":\"title\"|\"bullets\"|\"section\"}]}",
+    "2. 结构：{\"title\":总标题, \"subtitle\":副标题, \"slides\":[{\"title\":每页标题, \"bullets\":[要点字符串数组], \"notes\":演讲备注字符串, \"layout\":\"title\"|\"bullets\"|\"section\", \"imagePrompt\":英文配图提示词}]}",
     "3. 共生成 " + count + " 页。第 1 页为封面(layout:\"title\")；可穿插 \"section\" 分节页；其余为 \"bullets\" 内容页。",
     "4. 标题写成明确的短句；每页 bullets 3-5 条，信息具体、避免空话套话。",
     "5. notes 为该页演讲者备注（2-3 句），便于讲解时展开。",
     "6. 语言：" + langText + "。受众与语气：" + (TONE_TEXT[tone] || TONE_TEXT.general) + "。",
+    "7. imagePrompt 是给图片模型用的英文提示词（30-50 词）：描述与本页内容直接对应的具体场景、实物、人物或环境，让人只看图就能猜到主题；必须用到总主题里的关键名词和该页要点中的具体元素。禁止抽象光带、流线、科技波纹、无意义渐变、几何装饰，不要出现文字、字母、数字或 logo。字符串内不要用未转义的英文双引号。",
   ].join("\n");
 }
 function buildUserPrompt(topic, lang) {
@@ -129,6 +130,7 @@ function parseDeck(text, meta) {
     bullets: Array.isArray(x.bullets) ? x.bullets.map(String) : x.bullets ? [String(x.bullets)] : [],
     notes: String(x.notes || ""),
     layout: x.layout || "bullets",
+    imagePrompt: String(x.imagePrompt || ""),
     image: null,
   }));
   return {
@@ -168,6 +170,29 @@ async function generateDeck() {
   } finally { setBusy(false); }
 }
 
+// The old prompt asked for an "abstract presentation visual" using only the
+// slide title, so the model reliably returned generic light-ribbon decoration
+// unrelated to the topic. The outline now carries a concrete, topic-bound
+// imagePrompt from the same single LLM call; this wraps it with strict
+// "no abstract decoration" constraints and the deck's own context.
+function imagePromptFor(deck, s) {
+  const style = STYLES[deck.style] || STYLES.business;
+  const palette = style.dark
+    ? "dark, low-key editorial lighting, deep navy and charcoal tones with one subtle accent colour"
+    : "bright, clean editorial lighting, soft neutral background";
+  const context = [deck.title, deck.subtitle, s.title, ...(s.bullets || []).slice(0, 2)]
+    .filter(Boolean).join(" / ");
+  const subject = (s.imagePrompt || "").trim() ||
+    `A literal, recognisable scene illustrating ${context}, showing concrete real-world objects, people or places directly connected to this subject, editorial photography or realistic illustration.`;
+  return [
+    subject,
+    `Deck topic: ${deck.title}. This slide is specifically about: ${s.title}.`,
+    `Visual style: ${palette}, coherent with the slide template, one coherent high-quality scene, no collage.`,
+    "STRICTLY AVOID: abstract swirls, flowing light ribbons, generic technology waves, neon spirals, bokeh, random gradients, decorative geometric shapes, and any text, letters, numbers, logos or watermarks.",
+    "The picture must clearly depict this slide's subject — a viewer should recognise the topic from the image alone.",
+  ].join(" ");
+}
+
 async function generateImages(deck) {
   const targets = [];
   deck.slides.forEach((s, i) => {
@@ -176,9 +201,9 @@ async function generateImages(deck) {
   for (let k = 0; k < targets.length; k++) {
     const i = targets[k];
     try {
-      setBusy(true, `正在生成配图 ${k + 1}/${targets.length}…`);
+      setBusy(true, `正在按主题生成配图 ${k + 1}/${targets.length}…`);
       const data = unwrap(await anna.image.generate(
-        { prompt: `Professional abstract presentation visual for a slide titled "${deck.slides[i].title}". Modern, clean, no text, brand-safe.`, n: 1, size: "1280x720" },
+        { prompt: imagePromptFor(deck, deck.slides[i]), n: 1, size: "1280x720" },
         { timeoutMs: 120000 }
       ));
       const url = data?.images?.[0]?.url;
@@ -236,10 +261,14 @@ function renderPreview() {
   const accent = accentOf(d);
   const s = d.slides[state.idx];
   const isCover = state.idx === 0;
-  previewEl.className = "slide-preview" + (style.dark ? " is-dark" : "");
+  const hasImage = !!s.image;
+  previewEl.className = "slide-preview" + (style.dark ? " is-dark" : "") + (hasImage ? " has-image" : "");
   previewEl.style.background = "#" + style.bg;
   previewEl.style.color = "#" + style.text;
-  let html = "";
+  // Text lives in a left column that is narrowed whenever an image is present,
+  // so long titles wrap instead of running underneath the absolutely
+  // positioned right-hand image. The image is kept below the text layer too.
+  let html = '<div class="sp-content">';
   if (isCover) {
     html += `<div class="sp-kicker" style="color:#${accent}">PRESENTATION</div>`;
     html += `<div class="sp-title">${escapeHtml(d.title)}</div>`;
@@ -249,8 +278,9 @@ function renderPreview() {
     html += `<div class="sp-title">${escapeHtml(s.title)}</div>`;
     if (s.bullets.length) html += '<ul class="sp-bullets">' + s.bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join("") + "</ul>";
   }
-  if (s.notes) html += `<div class="sp-notes">🗒 ${escapeHtml(s.notes)}</div>`;
-  if (s.image) html += `<img class="sp-image" src="${s.image}" alt="" />`;
+  if (s.notes) html += `<div class="sp-notes">备注：${escapeHtml(s.notes)}</div>`;
+  html += "</div>";
+  if (hasImage) html += `<img class="sp-image" src="${escapeHtml(s.image)}" alt="" />`;
   previewEl.innerHTML = html;
 }
 function renderEditor() {
@@ -307,7 +337,7 @@ function onOutlineClick(e) {
 }
 function addSlide() {
   const d = state.deck; if (!d) return;
-  d.slides.splice(state.idx + 1, 0, { title: "新幻灯片", bullets: ["要点一", "要点二"], notes: "", layout: "bullets", image: null });
+  d.slides.splice(state.idx + 1, 0, { title: "新幻灯片", bullets: ["要点一", "要点二"], notes: "", layout: "bullets", imagePrompt: "", image: null });
   state.idx++;
   renderAll(); saveDeck();
 }
@@ -394,15 +424,18 @@ async function exportPptx() {
     d.slides.forEach((s, i) => {
       const sl = pptx.addSlide();
       sl.background = { color: style.bg };
+      const hasImage = !!s.image;
+      const textW = hasImage ? 7.4 : 11.9;
+      // Image first (underneath), text confined to the left column.
+      if (hasImage) sl.addImage({ data: s.image, x: 8.6, y: 1.8, w: 4.0, h: 4.4 });
       if (i === 0) {
-        sl.addText(d.title, { x: 0.7, y: 2.3, w: 11.9, h: 1.6, fontSize: 40, bold: true, color: accent });
-        if (d.subtitle) sl.addText(d.subtitle, { x: 0.7, y: 4.0, w: 11.9, h: 0.9, fontSize: 20, color: style.sub });
+        sl.addText(d.title, { x: 0.7, y: 2.3, w: textW, h: 1.6, fontSize: hasImage ? 34 : 40, bold: true, color: accent });
+        if (d.subtitle) sl.addText(d.subtitle, { x: 0.7, y: 4.0, w: textW, h: 0.9, fontSize: 20, color: style.sub });
       } else {
-        sl.addText(s.title, { x: 0.7, y: 0.5, w: 11.9, h: 1.0, fontSize: 28, bold: true, color: accent });
-        if (s.image) sl.addImage({ data: s.image, x: 8.6, y: 1.8, w: 4.0, h: 4.4 });
+        sl.addText(s.title, { x: 0.7, y: 0.5, w: textW, h: 1.0, fontSize: 28, bold: true, color: accent });
         sl.addText(
           s.bullets.map((b) => ({ text: b, options: { bullet: { indent: 18 } } })),
-          { x: 0.7, y: 1.8, w: (s.image ? 7.6 : 11.9), h: 4.8, fontSize: 18, color: style.text, lineSpacingMultiple: 1.2 }
+          { x: 0.7, y: 1.8, w: textW, h: 4.8, fontSize: 18, color: style.text, lineSpacingMultiple: 1.2 }
         );
       }
       if (s.notes) sl.addNotes(s.notes);
@@ -427,11 +460,11 @@ async function exportPdf() {
   setBusy(true, "正在生成 PDF…");
   try {
     const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: [1280, 720], compress: true });
-    d.slides.forEach((s, i) => {
+    for (let i = 0; i < d.slides.length; i++) {
       if (i > 0) pdf.addPage([1280, 720], "landscape");
-      const canvas = renderSlideCanvas(s, i, d);
+      const canvas = await renderSlideCanvas(d.slides[i], i, d);
       pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 1280, 720);
-    });
+    }
     const blob = pdf.output("blob");
     const res = await deliverFile(blob, safeName(d.title || "anna-deck") + ".pdf", "application/pdf");
     toast(res.mode === "cloud" ? "已导出 PDF · 本地下载 + 云端链接 ⬇" : "已导出 PDF ⬇", false, "ok");
@@ -449,7 +482,28 @@ function wrapCanvasText(g, text, x, y, maxW, lineH) {
   if (line) g.fillText(line, x, yy);
   return yy;
 }
-function renderSlideCanvas(s, i, d) {
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error("image decode failed"));
+    im.src = src;
+  });
+}
+function drawImageCover(g, im, x, y, w, h) {
+  const ir = im.width / im.height, br = w / h;
+  let sw = im.width, sh = im.height, sx = 0, sy = 0;
+  if (ir > br) { sw = im.height * br; sx = (im.width - sw) / 2; }
+  else { sh = im.width / br; sy = (im.height - sh) / 2; }
+  g.save();
+  g.beginPath();
+  if (typeof g.roundRect === "function") g.roundRect(x, y, w, h, 12);
+  else g.rect(x, y, w, h);
+  g.clip();
+  g.drawImage(im, sx, sy, sw, sh, x, y, w, h);
+  g.restore();
+}
+async function renderSlideCanvas(s, i, d) {
   const W = 1280, H = 720;
   const c = document.createElement("canvas");
   c.width = W; c.height = H;
@@ -457,6 +511,8 @@ function renderSlideCanvas(s, i, d) {
   const st = STYLES[d.style] || STYLES.business;
   const accent = "#" + accentOf(d);
   const font = '"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif';
+  const hasImage = !!s.image;
+  const textMaxW = hasImage ? 700 : W - 192;
   g.fillStyle = "#" + st.bg; g.fillRect(0, 0, W, H);
   g.fillStyle = accent; g.fillRect(0, 0, W, 10);
   g.textBaseline = "top";
@@ -464,21 +520,26 @@ function renderSlideCanvas(s, i, d) {
     g.fillStyle = "#" + st.sub; g.font = "20px " + font;
     g.fillText("PRESENTATION", 96, 150);
     g.fillStyle = accent; g.font = "bold 52px " + font;
-    wrapCanvasText(g, d.title, 96, 250, W - 192, 68);
+    wrapCanvasText(g, d.title, 96, 250, textMaxW, 68);
     g.fillStyle = "#" + st.sub; g.font = "26px " + font;
-    wrapCanvasText(g, d.subtitle || "", 96, 400, W - 192, 40);
+    wrapCanvasText(g, d.subtitle || "", 96, 400, textMaxW, 40);
   } else {
     g.fillStyle = "#" + st.sub; g.font = "20px " + font;
     g.fillText(s.layout === "section" ? "SECTION" : String(i + 1).padStart(2, "0"), 96, 80);
     g.fillStyle = accent; g.font = "bold 42px " + font;
-    const endY = wrapCanvasText(g, s.title, 96, 130, W - 192, 54);
+    const endY = wrapCanvasText(g, s.title, 96, 130, textMaxW, 54);
     let y = Math.max(260, endY + 70);
     (s.bullets || []).forEach((b) => {
       g.fillStyle = accent;
       g.beginPath(); g.arc(108, y + 15, 7, 0, Math.PI * 2); g.fill();
       g.fillStyle = "#" + st.text; g.font = "26px " + font;
-      y = wrapCanvasText(g, b, 140, y, W - 250, 40) + 24;
+      y = wrapCanvasText(g, b, 140, y, hasImage ? 600 : W - 250, 40) + 24;
     });
+  }
+  // PDF must show the same illustration as the preview / PPTX.
+  if (hasImage) {
+    try { drawImageCover(g, await loadImage(s.image), 830, 150, 360, 400); }
+    catch (e) { console.warn("pdf image skipped:", e); }
   }
   g.fillStyle = "#" + st.sub; g.font = "18px " + font;
   g.fillText(String(i + 1).padStart(2, "0") + " / " + String(d.slides.length).padStart(2, "0"), W - 150, H - 48);
